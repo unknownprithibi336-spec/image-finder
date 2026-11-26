@@ -1,6 +1,8 @@
 import os
-import requests
-from fastapi import FastAPI
+import uuid
+import base64
+from fastapi import FastAPI, Request
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import List, Any
 from serpapi import GoogleSearch
@@ -8,7 +10,8 @@ from serpapi import GoogleSearch
 app = FastAPI()
 
 SERPAPI_KEY = os.getenv("SERPAPI_KEY", "")
-IMGBB_API_KEY = os.getenv("IMGBB_API_KEY", "")
+TEMP_DIR = "/tmp/uploaded_imgs"
+os.makedirs(TEMP_DIR, exist_ok=True)
 
 class ImageBatch(BaseModel):
     images: List[Any]
@@ -22,31 +25,46 @@ def flatten_images(items):
             flat.append(item.strip())
     return flat
 
+@app.get("/temp-img/{filename}")
+async def serve_temp_image(filename: str):
+    file_path = os.path.join(TEMP_DIR, filename)
+    if os.path.exists(file_path):
+        return FileResponse(file_path, media_type="image/jpeg")
+    return {"error": "not found"}
+
 @app.post("/bulk-search")
-async def bulk_image_search(data: ImageBatch):
+async def bulk_image_search(data: ImageBatch, request: Request):
     all_related_image_urls = []
     debug_errors = []
     clean_images = flatten_images(data.images)
+    base_url = str(request.base_url).rstrip("/").replace("http://", "https://")
 
     for b64_img in clean_images:
         if "," in b64_img:
             b64_img = b64_img.split(",")[1]
-        res = requests.post(
-            "https://api.imgbb.com/1/upload",
-            data={"key": IMGBB_API_KEY, "image": b64_img, "expiration": 600}
-        ).json()
 
-        if "data" not in res:
-            debug_errors.append({"imgbb_error": res})
+        filename = f"{uuid.uuid4().hex}.jpg"
+        file_path = os.path.join(TEMP_DIR, filename)
+
+        try:
+            with open(file_path, "wb") as f:
+                f.write(base64.b64decode(b64_img))
+        except Exception as e:
+            debug_errors.append({"decode_error": str(e)})
             continue
 
-        public_url = res["data"]["url"]
+        public_url = f"{base_url}/temp-img/{filename}"
+
         search = GoogleSearch({
             "engine": "google_lens",
             "url": public_url,
             "api_key": SERPAPI_KEY
         })
         results = search.get_dict()
+
+        if os.path.exists(file_path):
+            os.remove(file_path)
+
         if "error" in results:
             debug_errors.append({"serpapi_error": results["error"]})
             continue
