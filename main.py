@@ -158,7 +158,19 @@ def bulk_image_search(data: ImageBatch):
             debug_errors.append({"image": index, "serpapi_error": results["error"]})
             continue
 
-        all_related_image_urls.extend(pick_matches(results.get("visual_matches", [])))
+        matches = results.get("visual_matches", [])
+        picked = pick_matches(matches)
+        all_related_image_urls.extend(picked)
+
+        if not picked:
+            debug_errors.append({
+                "image": index,
+                "no_results": True,
+                "uploaded_url": public_url,
+                "result_keys": [k for k in results.keys() if k != "search_parameters"],
+                "visual_matches_count": len(matches),
+                "serpapi_link": results.get("search_metadata", {}).get("google_lens_url", ""),
+            })
 
     return {
         "status": "success",
