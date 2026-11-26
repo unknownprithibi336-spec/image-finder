@@ -1,8 +1,7 @@
 import os
-import uuid
 import base64
-from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse
+import requests
+from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import List, Any
 from serpapi import GoogleSearch
@@ -10,8 +9,6 @@ from serpapi import GoogleSearch
 app = FastAPI()
 
 SERPAPI_KEY = os.getenv("SERPAPI_KEY", "")
-TEMP_DIR = "/tmp/uploaded_imgs"
-os.makedirs(TEMP_DIR, exist_ok=True)
 
 class ImageBatch(BaseModel):
     images: List[Any]
@@ -25,35 +22,34 @@ def flatten_images(items):
             flat.append(item.strip())
     return flat
 
-@app.get("/temp-img/{filename}")
-async def serve_temp_image(filename: str):
-    file_path = os.path.join(TEMP_DIR, filename)
-    if os.path.exists(file_path):
-        return FileResponse(file_path, media_type="image/jpeg")
-    return {"error": "not found"}
+def upload_temp_image(img_bytes: bytes) -> str:
+    res = requests.post(
+        "https://litterbox.catbox.moe/resources/internals/api.php",
+        data={"reqtype": "fileupload", "time": "1h"},
+        files={"fileToUpload": ("product.jpg", img_bytes, "image/jpeg")},
+        timeout=20
+    )
+    url = res.text.strip()
+    if url.startswith("http"):
+        return url
+    raise Exception(f"Upload failed: {url}")
 
 @app.post("/bulk-search")
-async def bulk_image_search(data: ImageBatch, request: Request):
+async def bulk_image_search(data: ImageBatch):
     all_related_image_urls = []
     debug_errors = []
     clean_images = flatten_images(data.images)
-    base_url = str(request.base_url).rstrip("/").replace("http://", "https://")
 
     for b64_img in clean_images:
         if "," in b64_img:
             b64_img = b64_img.split(",")[1]
 
-        filename = f"{uuid.uuid4().hex}.jpg"
-        file_path = os.path.join(TEMP_DIR, filename)
-
         try:
-            with open(file_path, "wb") as f:
-                f.write(base64.b64decode(b64_img))
+            img_bytes = base64.b64decode(b64_img)
+            public_url = upload_temp_image(img_bytes)
         except Exception as e:
-            debug_errors.append({"decode_error": str(e)})
+            debug_errors.append({"upload_error": str(e)})
             continue
-
-        public_url = f"{base_url}/temp-img/{filename}"
 
         search = GoogleSearch({
             "engine": "google_lens",
@@ -62,14 +58,14 @@ async def bulk_image_search(data: ImageBatch, request: Request):
         })
         results = search.get_dict()
 
-        if os.path.exists(file_path):
-            os.remove(file_path)
-
         if "error" in results:
             debug_errors.append({"serpapi_error": results["error"]})
             continue
 
         visual_matches = results.get("visual_matches", [])
+        if not visual_matches:
+            debug_errors.append({"empty_matches_keys": list(results.keys()), "url": public_url})
+
         count = 0
         for match in visual_matches:
             source = match.get("source", "").lower()
