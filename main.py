@@ -41,56 +41,77 @@ def decode_image(b64_img: str) -> bytes:
     return base64.b64decode(b64_img)
 
 
+def _upload_litterbox(img_bytes):
+    res = requests.post(
+        "https://litterbox.catbox.moe/resources/internals/api.php",
+        data={"reqtype": "fileupload", "time": "1h"},
+        files={"fileToUpload": ("product.jpg", img_bytes, "image/jpeg")},
+        headers=HEADERS,
+        timeout=25,
+    )
+    text = res.text.strip()
+    if text.startswith("http"):
+        return text
+    raise Exception(f"{res.status_code} {text[:100]}")
+
+
+def _upload_uguu(img_bytes):
+    res = requests.post(
+        "https://uguu.se/upload",
+        files={"files[]": ("product.jpg", img_bytes, "image/jpeg")},
+        headers=HEADERS,
+        timeout=25,
+    )
+    data = res.json()
+    if data.get("success") and data.get("files"):
+        return data["files"][0]["url"]
+    raise Exception(f"{res.status_code} {res.text[:100]}")
+
+
+def _upload_tmpfiles(img_bytes):
+    res = requests.post(
+        "https://tmpfiles.org/api/v1/upload",
+        files={"file": ("product.jpg", img_bytes, "image/jpeg")},
+        headers=HEADERS,
+        timeout=25,
+    )
+    data = res.json()
+    if data.get("status") == "success":
+        url = data["data"]["url"].replace("tmpfiles.org/", "tmpfiles.org/dl/", 1)
+        return url.replace("http://", "https://", 1)
+    raise Exception(f"{res.status_code} {res.text[:100]}")
+
+
+# সরাসরি .jpg লিংক দেয় এমন সার্ভিস আগে (Yandex-এর জন্য দরকার)
+UPLOADERS = [
+    ("litterbox", _upload_litterbox),
+    ("uguu", _upload_uguu),
+    ("tmpfiles", _upload_tmpfiles),
+]
+
+
+def image_is_public(url: str) -> bool:
+    # লিংকটা খুললে সত্যিই ছবি আসে কিনা দেখা
+    try:
+        res = requests.get(url, headers=HEADERS, timeout=15, stream=True)
+        ok = res.status_code == 200 and res.headers.get("Content-Type", "").startswith("image/")
+        res.close()
+        return ok
+    except Exception:
+        return False
+
+
 def upload_temp_image(img_bytes: bytes) -> str:
     errors = []
-
-    # অপশন ১: tmpfiles.org
-    try:
-        res = requests.post(
-            "https://tmpfiles.org/api/v1/upload",
-            files={"file": ("product.jpg", img_bytes, "image/jpeg")},
-            headers=HEADERS,
-            timeout=20,
-        )
-        data = res.json()
-        if data.get("status") == "success":
-            raw_url = data["data"]["url"]
-            url = raw_url.replace("tmpfiles.org/", "tmpfiles.org/dl/", 1)
-            return url.replace("http://", "https://", 1)
-        errors.append(f"tmpfiles: {res.status_code} {res.text[:100]}")
-    except Exception as e:
-        errors.append(f"tmpfiles: {e}")
-
-    # অপশন ২: uguu.se
-    try:
-        res = requests.post(
-            "https://uguu.se/upload",
-            files={"files[]": ("product.jpg", img_bytes, "image/jpeg")},
-            headers=HEADERS,
-            timeout=20,
-        )
-        data = res.json()
-        if data.get("success") and data.get("files"):
-            return data["files"][0]["url"]
-        errors.append(f"uguu: {res.status_code} {res.text[:100]}")
-    except Exception as e:
-        errors.append(f"uguu: {e}")
-
-    # অপশন ৩: litterbox
-    try:
-        res = requests.post(
-            "https://litterbox.catbox.moe/resources/internals/api.php",
-            data={"reqtype": "fileupload", "time": "1h"},
-            files={"fileToUpload": ("product.jpg", img_bytes, "image/jpeg")},
-            headers=HEADERS,
-            timeout=20,
-        )
-        if res.text.strip().startswith("http"):
-            return res.text.strip()
-        errors.append(f"litterbox: {res.status_code} {res.text[:100]}")
-    except Exception as e:
-        errors.append(f"litterbox: {e}")
-
+    for name, uploader in UPLOADERS:
+        try:
+            url = uploader(img_bytes)
+        except Exception as e:
+            errors.append(f"{name}: {e}")
+            continue
+        if image_is_public(url):
+            return url
+        errors.append(f"{name}: লিংক খুললে ছবি আসছে না ({url})")
     raise Exception(" | ".join(errors) or "সব upload সার্ভিস ব্যর্থ")
 
 
