@@ -144,22 +144,34 @@ def bulk_image_search(data: ImageBatch):
             debug_errors.append({"image": index, "upload_error": str(e)})
             continue
 
-        try:
-            results = GoogleSearch({
-                "engine": "google_lens",
-                "url": public_url,
-                "api_key": SERPAPI_KEY,
-            }).get_dict()
-        except Exception as e:
-            debug_errors.append({"image": index, "serpapi_error": str(e)})
-            continue
+        # Google এখন অনেক ছবিতে শুধু AI overview দেয়, তাই
+        # আলাদা করে visual_matches, তারপর products চাওয়া হচ্ছে
+        picked, matches, results = [], [], {}
+        for lens_type in ["visual_matches", "products"]:
+            try:
+                results = GoogleSearch({
+                    "engine": "google_lens",
+                    "type": lens_type,
+                    "url": public_url,
+                    "api_key": SERPAPI_KEY,
+                }).get_dict()
+            except Exception as e:
+                debug_errors.append({"image": index, "type": lens_type, "serpapi_error": str(e)})
+                continue
 
-        if "error" in results:
-            debug_errors.append({"image": index, "serpapi_error": results["error"]})
-            continue
+            if "error" in results:
+                debug_errors.append({"image": index, "type": lens_type, "serpapi_error": results["error"]})
+                continue
 
-        matches = results.get("visual_matches", [])
-        picked = pick_matches(matches)
+            matches = (
+                results.get("visual_matches", [])
+                + results.get("products", [])
+                + results.get("exact_matches", [])
+            )
+            picked = pick_matches(matches)
+            if picked:
+                break
+
         all_related_image_urls.extend(picked)
 
         if not picked:
