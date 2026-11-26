@@ -23,16 +23,55 @@ def flatten_images(items):
     return flat
 
 def upload_temp_image(img_bytes: bytes) -> str:
-    res = requests.post(
-        "https://litterbox.catbox.moe/resources/internals/api.php",
-        data={"reqtype": "fileupload", "time": "1h"},
-        files={"fileToUpload": ("product.jpg", img_bytes, "image/jpeg")},
-        timeout=20
-    )
-    url = res.text.strip()
-    if url.startswith("http"):
-        return url
-    raise Exception(f"Upload failed: {url}")
+    headers = {
+        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15"
+    }
+    errors = []
+
+    # অপশন ১: tmpfiles.org
+    try:
+        res = requests.post(
+            "https://tmpfiles.org/api/v1/upload",
+            files={"file": ("product.jpg", img_bytes, "image/jpeg")},
+            headers=headers,
+            timeout=15
+        )
+        data = res.json()
+        if data.get("status") == "success":
+            raw_url = data["data"]["url"]
+            return raw_url.replace("tmpfiles.org/", "tmpfiles.org/dl/")
+    except Exception as e:
+        errors.append(f"tmpfiles: {e}")
+
+    # অপশন ২: uguu.se
+    try:
+        res = requests.post(
+            "https://uguu.se/upload",
+            files={"files[]": ("product.jpg", img_bytes, "image/jpeg")},
+            headers=headers,
+            timeout=15
+        )
+        data = res.json()
+        if data.get("success") and data.get("files"):
+            return data["files"][0]["url"]
+    except Exception as e:
+        errors.append(f"uguu: {e}")
+
+    # অপশন ৩: litterbox (User-Agent সহ)
+    try:
+        res = requests.post(
+            "https://litterbox.catbox.moe/resources/internals/api.php",
+            data={"reqtype": "fileupload", "time": "1h"},
+            files={"fileToUpload": ("product.jpg", img_bytes, "image/jpeg")},
+            headers=headers,
+            timeout=15
+        )
+        if res.text.strip().startswith("http"):
+            return res.text.strip()
+    except Exception as e:
+        errors.append(f"litterbox: {e}")
+
+    raise Exception(" | ".join(errors))
 
 @app.post("/bulk-search")
 async def bulk_image_search(data: ImageBatch):
@@ -63,9 +102,6 @@ async def bulk_image_search(data: ImageBatch):
             continue
 
         visual_matches = results.get("visual_matches", [])
-        if not visual_matches:
-            debug_errors.append({"empty_matches_keys": list(results.keys()), "url": public_url})
-
         count = 0
         for match in visual_matches:
             source = match.get("source", "").lower()
