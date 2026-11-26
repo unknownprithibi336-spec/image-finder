@@ -94,12 +94,21 @@ def upload_temp_image(img_bytes: bytes) -> str:
     raise Exception(" | ".join(errors) or "সব upload সার্ভিস ব্যর্থ")
 
 
-def pick_matches(visual_matches):
+def _url_of(value):
+    # কিছু API-তে ছবি সরাসরি লিংক, কিছুতে {"link": ...}
+    if isinstance(value, dict):
+        value = value.get("link")
+    if isinstance(value, str) and value.startswith("http"):
+        return value
+    return None
+
+
+def pick_matches(matches):
     # আগে AliExpress/Amazon/Alibaba, তারপর বাকিগুলো
     preferred, others = [], []
-    for match in visual_matches:
-        source = (match.get("source") or "").lower()
-        link = (match.get("link") or "").lower()
+    for match in matches:
+        source = str(match.get("source") or "").lower()
+        link = str(match.get("link") or "").lower()
         if any(site in source or site in link for site in PREFERRED_SITES):
             preferred.append(match)
         else:
@@ -108,12 +117,57 @@ def pick_matches(visual_matches):
     urls = []
     for match in preferred + others:
         # বড় ছবি আগে, না পেলে thumbnail
-        img_link = match.get("image") or match.get("thumbnail")
+        img_link = None
+        for key in ["original", "original_image", "image", "thumbnail"]:
+            img_link = _url_of(match.get(key))
+            if img_link:
+                break
         if img_link and img_link not in urls:
             urls.append(img_link)
         if len(urls) >= MAX_PER_IMAGE:
             break
     return urls
+
+
+def search_google_lens(public_url):
+    results = GoogleSearch({
+        "engine": "google_lens",
+        "type": "visual_matches",
+        "url": public_url,
+        "api_key": SERPAPI_KEY,
+    }).get_dict()
+    if "error" in results:
+        raise Exception(results["error"])
+    return results.get("visual_matches", []) + results.get("exact_matches", [])
+
+
+def search_yandex(public_url):
+    matches = []
+    # "similar" ট্যাবে একই রকম দেখতে ছবি
+    results = GoogleSearch({
+        "engine": "yandex_images",
+        "url": public_url,
+        "tab": "similar",
+        "api_key": SERPAPI_KEY,
+    }).get_dict()
+    if "error" in results:
+        raise Exception(results["error"])
+    matches += results.get("images_results", [])
+    matches += results.get("similar_images", [])
+    shopping = results.get("shopping_results")
+    if isinstance(shopping, dict):
+        matches += shopping.get("products", [])
+    elif isinstance(shopping, list):
+        for block in shopping:
+            if isinstance(block, dict):
+                matches += block.get("products", [block])
+    return matches
+
+
+SEARCH_ENGINES = [
+    ("google_lens", search_google_lens),
+    ("yandex", search_yandex),
+]
 
 
 @app.get("/")
@@ -144,31 +198,17 @@ def bulk_image_search(data: ImageBatch):
             debug_errors.append({"image": index, "upload_error": str(e)})
             continue
 
-        # Google এখন অনেক ছবিতে শুধু AI overview দেয়, তাই
-        # আলাদা করে visual_matches, তারপর products চাওয়া হচ্ছে
-        picked, matches, results = [], [], {}
-        for lens_type in ["visual_matches", "products"]:
+        # প্রথমে Google Lens, কিছু না পেলে Yandex
+        picked = []
+        tried = []
+        for engine_name, search_fn in SEARCH_ENGINES:
             try:
-                results = GoogleSearch({
-                    "engine": "google_lens",
-                    "type": lens_type,
-                    "url": public_url,
-                    "api_key": SERPAPI_KEY,
-                }).get_dict()
+                matches = search_fn(public_url)
             except Exception as e:
-                debug_errors.append({"image": index, "type": lens_type, "serpapi_error": str(e)})
+                tried.append({"engine": engine_name, "error": str(e)})
                 continue
-
-            if "error" in results:
-                debug_errors.append({"image": index, "type": lens_type, "serpapi_error": results["error"]})
-                continue
-
-            matches = (
-                results.get("visual_matches", [])
-                + results.get("products", [])
-                + results.get("exact_matches", [])
-            )
             picked = pick_matches(matches)
+            tried.append({"engine": engine_name, "matches": len(matches)})
             if picked:
                 break
 
@@ -179,9 +219,7 @@ def bulk_image_search(data: ImageBatch):
                 "image": index,
                 "no_results": True,
                 "uploaded_url": public_url,
-                "result_keys": [k for k in results.keys() if k != "search_parameters"],
-                "visual_matches_count": len(matches),
-                "serpapi_link": results.get("search_metadata", {}).get("google_lens_url", ""),
+                "tried": tried,
             })
 
     return {
