@@ -24,14 +24,12 @@ def upload_to_imgbb(image_bytes: bytes) -> str:
 @app.post("/bulk-search")
 async def bulk_image_search(files: List[UploadFile] = File(...)):
     all_related_image_urls = []
-
     for file in files:
         image_bytes = await file.read()
         try:
             public_url = upload_to_imgbb(image_bytes)
         except Exception:
             continue
-
         params = {
             "engine": "google_lens",
             "url": public_url,
@@ -40,18 +38,15 @@ async def bulk_image_search(files: List[UploadFile] = File(...)):
         search = GoogleSearch(params)
         results = search.get_dict()
         visual_matches = results.get("visual_matches", [])
-
         count = 0
         for match in visual_matches:
             source = match.get("source", "").lower()
             img_link = match.get("thumbnail") or match.get("image")
-            
             if img_link and (any(site in source for site in ["aliexpress", "amazon", "alibaba"]) or count < 5):
                 all_related_image_urls.append(img_link)
                 count += 1
                 if count >= 5:
                     break
-
     return {
         "status": "success",
         "total_images": len(all_related_image_urls),
