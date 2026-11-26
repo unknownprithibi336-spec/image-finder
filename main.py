@@ -1,7 +1,8 @@
 import os
 import base64
 import requests
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI
+from pydantic import BaseModel
 from typing import List
 from serpapi import GoogleSearch
 
@@ -10,24 +11,27 @@ app = FastAPI()
 SERPAPI_KEY = os.getenv("SERPAPI_KEY", "")
 IMGBB_API_KEY = os.getenv("IMGBB_API_KEY", "")
 
-def upload_to_imgbb(image_bytes: bytes) -> str:
+class ImageBatch(BaseModel):
+    images: List[str]
+
+def upload_base64_to_imgbb(b64_string: str) -> str:
     url = "https://api.imgbb.com/1/upload"
-    encoded_image = base64.b64encode(image_bytes).decode("utf-8")
+    if "," in b64_string:
+        b64_string = b64_string.split(",")[1]
     payload = {
         "key": IMGBB_API_KEY,
-        "image": encoded_image,
+        "image": b64_string,
         "expiration": 600
     }
     res = requests.post(url, data=payload).json()
     return res["data"]["url"]
 
 @app.post("/bulk-search")
-async def bulk_image_search(files: List[UploadFile] = File(...)):
+async def bulk_image_search(data: ImageBatch):
     all_related_image_urls = []
-    for file in files:
-        image_bytes = await file.read()
+    for b64_img in data.images:
         try:
-            public_url = upload_to_imgbb(image_bytes)
+            public_url = upload_base64_to_imgbb(b64_img)
         except Exception:
             continue
         params = {
